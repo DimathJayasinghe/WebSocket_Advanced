@@ -310,6 +310,13 @@ async function handleLogic(socket) {
       case OPCODE_PONG:
         printINFO("Received a PONG signal from client");
         break;
+      case OPCODE_BINARY:
+        saveAsFile([frameContent.payload], "binary");
+        break;
+      case OPCODE_TEXT:
+        // saveAsFile(frameContent.payload,"binary")
+        writeToSocket(socket,`${frameContent.payload}`);
+        break;
     }
     continue_Frames = 0;
   }

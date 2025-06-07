@@ -115,7 +115,7 @@ export function printFrameToClient(frameContent,socket) {
     "     +---------------------------------------------------------------+"
   );
   lines.push(" ");
-  lines.push(`     Payload value: ${frameContent.payload}`);
+  // lines.push(`     Payload value: ${frameContent.payload}`);
   lines.push(`     Payload Length: ${frameContent.payload_length}`)
   const frame = lines.join("\n");
   writeToSocket(socket,frame)
