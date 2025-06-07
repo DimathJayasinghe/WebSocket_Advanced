@@ -5,6 +5,9 @@ const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 
 const socket = new WebSocket(`${wsProtocol}//${host}:${PORT}`);
 
+// Add connection time tracking
+let heartbeatInterval = null;
+
 const log = (msg) => {
   document.getElementById("log").textContent += msg + "\n";
 };
@@ -38,6 +41,11 @@ socket.onerror = (error) => {
 
 socket.onclose = (event) => {
   log("WebSocket closed: " + JSON.stringify(event));
+
+  // Clear heartbeat
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+  }
 };
 
 // Send text message
@@ -58,15 +66,15 @@ document.addEventListener("DOMContentLoaded", () => {
   if (imageInput) {
     imageInput.setAttribute("accept", "image/*,.pdf");
   }
+
+  // Rename the button to be more generic
+  const sendFileBtn = document.getElementById("sendImageBtn");
+  if (sendFileBtn) {
+    sendFileBtn.textContent = "Send File";
+  }
 });
 
-// Rename the button and related elements to be more generic
-const sendFileBtn = document.getElementById("sendImageBtn");
-if (sendFileBtn) {
-  sendFileBtn.textContent = "Send File";
-}
-
-// Update the file upload function to simply send binary data
+// Update the file upload function to send binary data
 document.getElementById("sendImageBtn").onclick = () => {
   const fileInput = document.getElementById("imageInput");
   const file = fileInput.files[0];
@@ -97,26 +105,46 @@ document.getElementById("sendImageBtn").onclick = () => {
   log(`Sending ${fileType}: ${file.name} (${formatFileSize(file.size)})`);
   fileInfo.textContent = `${file.name} - ${formatFileSize(file.size)}`;
 
-  // Read the file and send it directly as binary data
+  // Set a timeout to detect stalled uploads
+  const transferTimeout = setTimeout(() => {
+    log(
+      "WARNING: File transfer appears to be stalled. You may need to try again."
+    );
+    fileInfo.style.color = "#dc3545"; // Red
+  }, 10000); // 10 seconds
+
+  // Read the file and send it
   const reader = new FileReader();
 
   reader.onload = (e) => {
-    // Let the browser handle the WebSocket framing
-    socket.send(e.target.result);
-    log(`Sent file: ${formatFileSize(file.size)}`);
+    try {
+      // Send the file
+      socket.send(e.target.result);
 
-    // Update UI
-    progressBar.value = 100;
-    fileInfo.textContent = `${file.name} - ${formatFileSize(
-      file.size
-    )} - 100% Complete`;
+      clearTimeout(transferTimeout);
+      log(`Sent file: ${formatFileSize(file.size)}`);
+
+      // Update UI
+      progressBar.value = 100;
+      fileInfo.textContent = `${file.name} - ${formatFileSize(
+        file.size
+      )} - 100% Complete`;
+      fileInfo.style.color = "#28a745"; // Green
+    } catch (err) {
+      clearTimeout(transferTimeout);
+      log(`ERROR sending file: ${err.message}`);
+      fileInfo.style.color = "#dc3545"; // Red
+      fileInfo.textContent += ` - ERROR: ${err.message}`;
+    }
   };
 
   reader.onerror = (err) => {
+    clearTimeout(transferTimeout);
     log(`Error reading file: ${err}`);
+    fileInfo.style.color = "#dc3545"; // Red
   };
 
-  // Read the file as an ArrayBuffer which the browser will send as binary
+  // Read the file as an ArrayBuffer
   reader.readAsArrayBuffer(file);
 };
 

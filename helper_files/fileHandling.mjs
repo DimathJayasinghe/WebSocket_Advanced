@@ -1,7 +1,7 @@
 import { printERROR, printSUCCESS } from "./console_print.mjs";
 import fs from "fs";
 import path from "path";
-
+import { closeSocket } from "./closeSocket_handler.mjs";
 export function saveAsFile(
   payloadArray,
   fileType = "text",
@@ -44,6 +44,50 @@ export function saveAsFile(
     printSUCCESS(`File saved: ${fullFilename}`);
   } catch (error) {
     printERROR(`Failed to save file: ${error.message}`);
+  }
+}
+
+// Add this function to handle streaming file saves
+export function saveStreamedFile(
+  payloadArray,
+  fileType = "binary",
+  filename = "output"
+) {
+  try {
+    // Create output directory if it doesn't exist
+    const outputDir = path.join(process.cwd(), "uploads");
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Generate unique filename
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+    // For binary files, detect extension from first chunk
+    let fileExtension = ".bin";
+    if (fileType === "binary" && payloadArray.length > 0) {
+      fileExtension = detectFileType(payloadArray[0]);
+    }
+
+    const fullFilename = path.join(
+      outputDir,
+      `${timestamp}_${filename}${fileExtension}`
+    );
+
+    // Write all chunks to file sequentially
+    const writeStream = fs.createWriteStream(fullFilename);
+
+    for (const chunk of payloadArray) {
+      writeStream.write(chunk);
+    }
+
+    writeStream.end();
+
+    printSUCCESS(`File saved (stream mode): ${fullFilename}`);
+    return fullFilename;
+  } catch (error) {
+    printERROR(`Failed to save streamed file: ${error.message}`);
+    return null;
   }
 }
 

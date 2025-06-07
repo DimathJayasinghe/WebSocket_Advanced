@@ -8,10 +8,15 @@ import { writeToSocket } from "./write_to_socket.mjs";
 import fs from "fs";
 import path from "path";
 import { saveAsFile } from "./fileHandling.mjs";
+import { closeSocket } from "./closeSocket_handler.mjs";
 
 const OPCODE_CONTINUATION = 0x0;
 const OPCODE_TEXT = 0x01;
 const OPCODE_BINARY = 0x2;
+
+const OPCODE_CONN_CLOSE = 0x8;
+const OPCODE_PING = 0x9;
+const OPCODE_PONG = 0xa;
 
 const frameContent = {
   FIN_BIT_FLAG: 0, // 1 bit - FIN bit (0 or 1)
@@ -39,54 +44,29 @@ let fragmented_payload_container = {
   payload_buffer: [],
 };
 
+let pingInterval = null;
+let timeoutInterval = null;
+let pingTimerStarted = false;
+let lastContactTime = Date.now(); // Track last activity time
+let pingTimeout = 30; // seconds - send ping after this much inactivity
+let connectionTimeout = 60; // seconds - close connection if no response after this much time
+
+let frameCompletionTimer = null;
+const FRAME_COMPLETION_TIMEOUT = 3000; // 3 seconds
+
 export async function readFromSocket(socket) {
   if (!socket.readable || isProcessingFrame) return;
+  // Update last contact time whenever we receive data
+  lastContactTime = Date.now();
+  pingTimerStart(socket);
 
   try {
     isProcessingFrame = true;
     // Get the frame
     await readTheFrame(socket);
 
-    printINFO(
-      `OPCODE: ${frameContent.OPCODE} FIN: ${frameContent.FIN_BIT_FLAG} FRAME_NO. ${continue_Frames}`
-    );
-
-
-
-    if (frameContent.FIN_BIT_FLAG == 0) {
-      switch (frameContent.OPCODE) {
-        case OPCODE_TEXT:
-          fragmented_payload_container.payload_type = "text";
-          break;
-        case OPCODE_BINARY:
-          fragmented_payload_container.payload_type = "binary";
-          break;
-      }
-      fragmented_payload_container.payload_buffer.push(frameContent.payload);
-      continue_Frames++;
-    } else if (frameContent.FIN_BIT_FLAG == 1 && frameContent.OPCODE == OPCODE_CONTINUATION) {
-      continue_Frames++;
-      printSUCCESS(`Continue Frames: ${continue_Frames} File type: ${fragmented_payload_container.payload_type}`);
-      //   Save the file
-      saveAsFile(
-        fragmented_payload_container.payload_buffer,
-        fragmented_payload_container.payload_type
-      );
-      continue_Frames = 0;
-      //Flush the buffer
-      fragmented_payload_container.payload_buffer.length = 0;
-      fragmented_payload_container.payload_type = null;
-    }else{
-        // Handls single frames
-        writeToSocket(socket,` We received this message: ${frameContent.payload}`)
-        continue_Frames = 0;
-    }
-
-
-
-
-
-
+    // Logic handling function
+    await handleLogic(socket);
 
     // Send client the received frame
     printFrameToClient(frameContent, socket);
@@ -94,7 +74,33 @@ export async function readFromSocket(socket) {
     // reset the framecontent buffer
     resetFrameContent();
   } catch (error) {
-    printERROR(error);
+    // Handle socket ended gracefully
+    if (
+      error.message.includes("Socket ended") ||
+      error.message.includes("ECONNRESET")
+    ) {
+      printINFO(`Connection closed while reading frame: ${error.message}`);
+
+      // Check if we have partial data to save
+      if (
+        continue_Frames > 0 &&
+        fragmented_payload_container.payload_buffer.length > 0
+      ) {
+        printINFO("Saving partially received file data");
+        saveAsFile(
+          fragmented_payload_container.payload_buffer,
+          fragmented_payload_container.payload_type || "binary"
+        );
+
+        // Reset state
+        continue_Frames = 0;
+        fragmented_payload_container.payload_buffer = [];
+        fragmented_payload_container.payload_type = null;
+      }
+    } else {
+      // Other errors
+      printERROR(error);
+    }
   } finally {
     isProcessingFrame = false;
   }
@@ -223,4 +229,152 @@ function resetFrameContent() {
   frameContent.payload_length = null;
   frameContent.masking_key = null;
   frameContent.payload = [];
+}
+
+async function handleLogic(socket) {
+  printINFO(`FIN: ${frameContent.FIN_BIT_FLAG} OPCODE: ${frameContent.OPCODE}`);
+  // Update last contact time for any valid frame
+  lastContactTime = Date.now();
+
+  if (frameContent.FIN_BIT_FLAG == 0) {
+    switch (frameContent.OPCODE) {
+      case OPCODE_TEXT:
+        fragmented_payload_container.payload_type = "text";
+        break;
+      case OPCODE_BINARY:
+        fragmented_payload_container.payload_type = "binary";
+        break;
+    }
+    fragmented_payload_container.payload_buffer.push(frameContent.payload);
+    continue_Frames++;
+
+    if (frameCompletionTimer) {
+      clearTimeout(frameCompletionTimer);
+    }
+
+    // Set a timeout to save the file if no more frames arrive
+    frameCompletionTimer = setTimeout(() => {
+      if (
+        continue_Frames > 0 &&
+        fragmented_payload_container.payload_buffer.length > 0
+      ) {
+        printINFO(
+          `Frame sequence timed out after ${continue_Frames} frames, saving partial file`
+        );
+
+        // Save what we've got so far
+        saveAsFile(
+          fragmented_payload_container.payload_buffer,
+          fragmented_payload_container.payload_type
+        );
+
+        // Reset state
+        continue_Frames = 0;
+        fragmented_payload_container.payload_buffer = [];
+        fragmented_payload_container.payload_type = null;
+      }
+
+      frameCompletionTimer = null;
+    }, FRAME_COMPLETION_TIMEOUT);
+  } else if (
+    frameContent.FIN_BIT_FLAG == 1 &&
+    frameContent.OPCODE == OPCODE_CONTINUATION
+  ) {
+    // Clear the timeout since we got the final frame
+    if (frameCompletionTimer) {
+      clearTimeout(frameCompletionTimer);
+      frameCompletionTimer = null;
+    }
+    continue_Frames++;
+    printSUCCESS(
+      `Continue Frames: ${continue_Frames} File type: ${fragmented_payload_container.payload_type}`
+    );
+    //   Save the file
+    saveAsFile(
+      fragmented_payload_container.payload_buffer,
+      fragmented_payload_container.payload_type
+    );
+    continue_Frames = 0;
+    //Flush the buffer
+    fragmented_payload_container.payload_buffer.length = 0;
+    fragmented_payload_container.payload_type = null;
+  } else {
+    // Handls single frames
+    switch (frameContent.OPCODE) {
+      case OPCODE_CONN_CLOSE:
+        printINFO("Received closing frame from client");
+        closeSocket(socket);
+        resetFrameContent();
+        isProcessingFrame = false;
+        break;
+      case OPCODE_PONG:
+        printINFO("Received a PONG signal from client");
+        break;
+    }
+    continue_Frames = 0;
+  }
+}
+
+// Functions for ping
+export function pingTimerStart(socket) {
+  // Only start the timer once
+  if (pingTimerStarted) return;
+  pingTimerStarted = true;
+
+  // Mark contact for the current message
+  lastContactTime = Date.now();
+
+  // Set a single interval that checks regularly
+  pingInterval = setInterval(() => {
+    const now = Date.now();
+    const secondsSinceLastContact = (now - lastContactTime) / 1000;
+
+    // If we haven't heard from client in pingTimeout seconds, send a ping
+    if (secondsSinceLastContact >= pingTimeout && socket.writable) {
+      printINFO(
+        `No activity for ${Math.floor(
+          secondsSinceLastContact
+        )} seconds, sending ping`
+      );
+      sendPing(socket);
+    }
+
+    // If we haven't heard from client in connectionTimeout seconds, close the connection
+    if (secondsSinceLastContact >= connectionTimeout) {
+      printINFO(
+        `No activity for ${Math.floor(
+          secondsSinceLastContact
+        )} seconds, closing connection`
+      );
+      closeSocket(socket);
+      clearPingTimers();
+    }
+  }, 5000); // Check every 5 seconds
+
+  // Set up cleanup when socket closes
+  socket.on("close", () => {
+    clearPingTimers();
+  });
+}
+
+function clearPingTimers() {
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
+  pingTimerStarted = false;
+}
+
+function sendPing(socket) {
+  const frameSize = 2;
+  const frame = Buffer.alloc(frameSize);
+  frame[0] = 0x89; // PING opcode with FIN=1
+  frame[1] = 0; // No mask, zero length
+
+  try {
+    socket.write(frame);
+    printINFO("Ping sent to client");
+  } catch (err) {
+    printERROR(`Error sending ping: ${err.message}`);
+  }
 }

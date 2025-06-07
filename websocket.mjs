@@ -7,7 +7,7 @@ import {
   printSUCCESS,
 } from "./helper_files/console_print.mjs";
 import * as conn from "./helper_files/establish_conn.mjs";
-import { readFromSocket } from "./helper_files/read_from_Socket.mjs";
+import { readFromSocket,pingTimerStart } from "./helper_files/read_from_Socket.mjs";
 
 
 export function setupWebSocket(server) {
@@ -44,6 +44,12 @@ export function setupWebSocket(server) {
         socket.on("close", () => {
           printINFO("Socket close req accept");
         });
+
+
+        /**
+         * Ping client
+         */
+        pingTimerStart(socket);
       } else {
         throw new Error("Not a websocket upgrade header");
       }
