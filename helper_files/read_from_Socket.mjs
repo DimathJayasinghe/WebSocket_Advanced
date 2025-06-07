@@ -5,8 +5,6 @@ import {
   printFrameToClient,
 } from "./console_print.mjs";
 import { writeToSocket } from "./write_to_socket.mjs";
-import fs from "fs";
-import path from "path";
 import { saveAsFile } from "./fileHandling.mjs";
 import { closeSocket } from "./closeSocket_handler.mjs";
 
@@ -45,7 +43,6 @@ let fragmented_payload_container = {
 };
 
 let pingInterval = null;
-let timeoutInterval = null;
 let pingTimerStarted = false;
 let lastContactTime = Date.now(); // Track last activity time
 let pingTimeout = 30; // seconds - send ping after this much inactivity
@@ -302,19 +299,21 @@ async function handleLogic(socket) {
     // Handls single frames
     switch (frameContent.OPCODE) {
       case OPCODE_CONN_CLOSE:
-        printINFO("Received closing frame from client");
+        printSUCCESS("Received closing frame from client");
         closeSocket(socket);
         resetFrameContent();
         isProcessingFrame = false;
         break;
       case OPCODE_PONG:
-        printINFO("Received a PONG signal from client");
+        printSUCCESS("Received a PONG signal from client");
         break;
       case OPCODE_BINARY:
         saveAsFile([frameContent.payload], "binary");
         break;
       case OPCODE_TEXT:
-        // saveAsFile(frameContent.payload,"binary")
+        if (frameContent.payload_length > 2000){
+          saveAsFile([frameContent.payload],"text")
+        }
         writeToSocket(socket,`${frameContent.payload}`);
         break;
     }
